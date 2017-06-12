@@ -1,58 +1,59 @@
 import java.util.Date
-
-import breeze.linalg.{DenseMatrix, DenseVector, cholesky, diag, inv, sum, svd}
-import breeze.numerics.{pow, sqrt}
+import breeze.linalg.{*, _}
+import breeze.numerics._
 import breeze.plot._
-import org.jfree.chart.plot.ValueMarker
-import org.jfree.chart.axis._
 import cern.jet.random.tdouble.Gamma
 import cern.jet.random.tdouble.engine.DoubleMersenneTwister
+import org.jfree.chart.plot.ValueMarker
 import breeze.stats.mean
-import breeze.linalg._
-
-import scala.math
-
 
 /**
-  *
+  * Created by Antonia Kontaratou
   * Simulates data for intercept, b1, b2 and y (n rows)
   * Gibbs sampler to estimate intercept, b1, b2 and y.
-  * Beta coefficients estimated in 2 ways: sampling with multivariate gaussian, and svd factorisation.
+  * Beta coefficients are updated separately, one at a time.
   * Plots of the results: trace plots, histograms of the density-marginal distribution, autocorrelation plots.
   */
-object GibbsDenseMatrix {
+object GibbsSamplerSeparate {
+
   class State(var betaCoefs: DenseVector[Double] ,var tau: Double)
+
   val n = 100
   val a = 1
   val b = 0.01
   val lambda = 0.001 //K=λI, λ is how uncertain we are about μ. Here we chose a small one that indicates that we are a quite uncertain and it does not affect much the variance where it is used.
   val (simY, simX) = dataSimulation(n) //simDataY=y and x: 1,x1,x2
-  val dI = diag(DenseVector.ones[Double](simX.cols))
-  val K = lambda*dI
+
   val rngEngine = new DoubleMersenneTwister(new Date)
   val rngTau = new Gamma(1.0,0.01,rngEngine)
 
 
   def nextIter(st: State):State={ //it basically creates the next state
 
-    def multivariateGaussian(m: DenseVector[Double], v: DenseMatrix[Double]): DenseVector[Double]={
-      val root: DenseMatrix[Double] = cholesky(v)
-      val z: DenseVector[Double] = DenseVector.rand(m.length, breeze.stats.distributions.Gaussian(0, 1))
-      val sample = { root * z += m }
-      sample
+     //Separate sampling
+
+//    //beta0 the same way for the rest of the coefficients
+//    val xb0= simX(::,0).t*(simY-simX(::,1)*st.betaCoefs(1)-simX(::,2)*st.betaCoefs(2))
+//    val powb0=sum(pow(simX(::,0),2))
+//    val postMeanb0=(st.tau*xb0)/(1+st.tau*powb0)
+//    val postVarb0= 1/(1+st.tau*powb0)
+//    val newBeta0= breeze.stats.distributions.Gaussian(postMeanb0, postVarb0).draw()
+
+    val newBetaCoefs = new DenseVector[Double](3)
+    (0 until simX.cols).foreach { i =>
+      var sumb  = new DenseVector[Double](simX.rows)
+      (0 until simX.cols).foreach { j =>
+        if (i!=j){
+          sumb= sumb+simX(::,j)*st.betaCoefs(j)
+        }
+      }
+      val xb= simX(::,i).t*(simY-sumb)
+      val powb= sum(pow(simX(::,i),2))
+      val postMeanBeta=(st.tau*xb)/(1+st.tau*powb)
+      val postVarBeta= 1/((1/lambda) +st.tau*powb)
+      val newBeta= breeze.stats.distributions.Gaussian(postMeanBeta, postVarBeta).draw()
+      newBetaCoefs(i)=newBeta
     }
-
-    val KtauXtXinv= inv(K + st.tau * simX.t * simX)
-    // val normal01 = breeze.stats.distributions.Gaussian(KtauXtXinv*(tau*Xt*y), KtauXtXinv) Doesn't work when specifying the variables.
-
-    //**** MULTIVARIATE GAUSSIAN (to get the beta coefs, "uncomment" the following line) ****
-    //val newBetaCoefs = multivariateGaussian(KtauXtXinv * (st.tau * simX.t * simY), KtauXtXinv)
-
-    // ------ OR ------
-    //  ***** SVD (to estimate the beta coefficients) ****
-    val svdM = svd.reduced(simX)
-    val meanSVD=svdM.Vt.t * diag(svdM.S:/((pow(svdM.S,2)+lambda* DenseVector.ones[Double](3))))*svdM.U.t*simY
-    val newBetaCoefs = multivariateGaussian(meanSVD, KtauXtXinv)
     val yxb = simY - simX * newBetaCoefs
     val newtau = rngTau.nextDouble( a + simX.rows / 2, b + (yxb.t * yxb) / 2)
 
@@ -163,13 +164,23 @@ object GibbsDenseMatrix {
 
     }
 
+
+
+  }
+
+  def time[A](f: => A) = {
+    val s = System.nanoTime
+    val ret = f
+    println("time: " +(System.nanoTime-s)/1e6 + "ms" )
+    ret
   }
 
   def main(args: Array[String]) {
-    val st=genIters(new State(DenseVector(0.0, 0.0, 0.0), 0.0), 1, 1000, 10)
+    val st=time(genIters(new State(DenseVector(0.0, 0.0, 0.0), 0.0), 1, 1000, 10))
     //print(st)
+
     println("Estimated coefficients " + mean(st(::,*)))
-    plotResults(st, List("Intercept","b1", "b2", "Variance"))
+    plotResults(st(100 until st.rows,::), List("Intercept","b1", "b2", "Variance"))
+
   }
 }
-
